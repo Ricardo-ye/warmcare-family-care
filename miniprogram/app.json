@@ -1,0 +1,55 @@
+{
+  "pages": [
+    "pages/login/index",
+    "pages/home/index",
+    "pages/messages/index",
+    "pages/family/index",
+    "pages/sos/index",
+    "pages/records/index",
+    "pages/todos/index",
+    "pages/elders/index",
+    "pages/profile/index",
+    "pages/privacy/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "暖心护",
+    "navigationBarBackgroundColor": "#f8f5ef",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#f8f5ef",
+    "enablePullDownRefresh": true
+  },
+  "tabBar": {
+    "color": "#70685f",
+    "selectedColor": "#a44424",
+    "backgroundColor": "#fffdf9",
+    "list": [
+      {
+        "pagePath": "pages/home/index",
+        "text": "家庭",
+        "iconPath": "assets/tab-home.png",
+        "selectedIconPath": "assets/tab-home-active.png"
+      },
+      {
+        "pagePath": "pages/messages/index",
+        "text": "家人消息",
+        "iconPath": "assets/tab-records.png",
+        "selectedIconPath": "assets/tab-records-active.png"
+      },
+      {
+        "pagePath": "pages/records/index",
+        "text": "生活记录",
+        "iconPath": "assets/tab-todos.png",
+        "selectedIconPath": "assets/tab-todos-active.png"
+      },
+      {
+        "pagePath": "pages/profile/index",
+        "text": "我的",
+        "iconPath": "assets/tab-profile.png",
+        "selectedIconPath": "assets/tab-profile-active.png"
+      }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}

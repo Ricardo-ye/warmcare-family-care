@@ -1,0 +1,789 @@
+const crypto = require('crypto');
+const personal = require('./personal');
+const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
+const uid = () => crypto.randomBytes(16).toString('hex');
+class UserError extends Error {
+  constructor(message, code = 'VALIDATION_FAILED') {
+    super(message);
+    this.code = code;
+  }
+}
+const NORMAL_BYTES = 850000,
+  MAX_BYTES = 1000000;
+const bytes = (s) => Buffer.byteLength(JSON.stringify(s), 'utf8');
+function pruneHistory(s) {
+  const active = s.alerts.filter((a) => a.status === 'active');
+  const history = s.alerts
+    .filter((a) => a.status !== 'active' && Date.now() - Date.parse(a.createdAt) < 30 * 86400000)
+    .slice(0, 80);
+  s.alerts = [...active, ...history];
+}
+function enforceCapacity(s, before, operation) {
+  const emergency = operation.startsWith('sos.');
+  if (emergency) {
+    pruneHistory(s);
+    while (bytes(s) >= MAX_BYTES) {
+      const i = s.alerts.map((a) => a.status).lastIndexOf('closed');
+      const j = s.alerts.map((a) => a.status).lastIndexOf('cancelled');
+      const index = Math.max(i, j);
+      if (index < 0) break;
+      s.alerts.splice(index, 1);
+    }
+  } else {
+    const recovering =
+      [
+        'message.remove',
+        'record.delete',
+        'media.clean',
+        'family.cleanupDeparted',
+        'family.remove',
+        'family.revokeInvites',
+        'family.revokeInvite',
+      ].includes(operation) ||
+      (operation === 'notebook.apply' && bytes(s) < before);
+    if (!recovering && bytes(s) >= NORMAL_BYTES)
+      throw new UserError(
+        '普通记录空间接近上限，请先导出并整理；求助空间仍保留',
+        'NORMAL_CAPACITY_FULL',
+      );
+  }
+  if (bytes(s) >= MAX_BYTES)
+    throw new UserError('家庭空间已达上限，请整理旧记录；紧急情况请电话联系', 'CAPACITY_FULL');
+}
+function need(ok, message) {
+  if (!ok) throw new UserError(message);
+}
+function text(value, max, label, optional = false) {
+  const v = typeof value === 'string' ? value.trim() : '';
+  need(
+    (optional || v.length) && v.length <= max,
+    label + '请填写' + (optional ? '0' : '1') + '—' + max + '字',
+  );
+  return v;
+}
+function blank() {
+  return {
+    schema: 4,
+    revision: 0,
+    name: '我的家',
+    members: [],
+    invites: [],
+    notebook: personal.empty(),
+    messages: [],
+    alerts: [],
+    media: [],
+    receipts: [],
+  };
+}
+const isMember = (s, openid) => s && s.members.find((m) => m.openid === openid);
+function canReadMessage(x, m) {
+  return (
+    x.audience === 'family' ||
+    x.senderId === m.id ||
+    (x.audience === 'members'
+      ? x.recipientIds.includes(m.id)
+      : !x.elderId || m.role === 'guardian' || x.elderId === m.elderId)
+  );
+}
+function notebookFor(s, m) {
+  if (m.role === 'guardian') return { ...s.notebook, receipts: [] };
+  return {
+    ...s.notebook,
+    elders: s.notebook.elders.filter((e) => e.id === m.elderId),
+    records: s.notebook.records.filter((r) => r.elderId === m.elderId),
+    todos: s.notebook.todos.filter((r) => r.elderId === m.elderId),
+    receipts: [],
+  };
+}
+function view(s, m, config) {
+  return {
+    schema: 4,
+    name: s.name,
+    revision: s.revision,
+    me: {
+      id: m.id,
+      name: m.name,
+      role: m.role,
+      elderId: m.elderId,
+      phone: m.phone,
+      following: m.following,
+      isOwner: m.openid === config.owner,
+    },
+    members: s.members.map(({ openid, ...r }) => ({ ...r, isOwner: openid === config.owner })),
+    notebook: notebookFor(s, m),
+    messages: s.messages.filter((x) => canReadMessage(x, m)),
+    capabilities: [
+      'message-audience',
+      'member-invites',
+      'family-records',
+      'departed-cleanup',
+      'notebook-version',
+    ],
+    departedContent:
+      m.openid === config.owner
+        ? {
+            messages: s.messages.filter((x) => !s.members.some((n) => n.id === x.senderId)).length,
+            records: (s.familyRecords || []).filter(
+              (x) => !s.members.some((n) => n.id === x.authorId),
+            ).length,
+          }
+        : null,
+    familyRecords: (s.familyRecords || []).map((r) => ({ ...r, canEdit: r.authorId === m.id })),
+    pendingInvites: s.invites
+      .filter(
+        (i) => !i.used && i.expiresAt > Date.now() && (m.openid === config.owner || i.by === m.id),
+      )
+      .map(({ id, role, elderId, expiresAt }) => ({ id, role, elderId, expiresAt })),
+    alerts: s.alerts.filter((a) => m.role === 'guardian' || a.elderId === m.elderId),
+    templateId: config.templateId || '',
+    notificationConfigured: !!config.templateId && !!config.templateFields,
+    limits: { members: 20, messages: 200, voiceSeconds: 60 },
+  };
+}
+function addMember(s, openid, role, name, phone, elderId) {
+  need(s.members.length < 20, '本家庭最多20位成员');
+  const m = {
+    id: uid(),
+    openid,
+    role,
+    name,
+    phone,
+    following: s.notebook.elders.map((e) => e.id),
+    joinedAt: new Date().toISOString(),
+  };
+  if (role === 'elder') {
+    if (elderId) {
+      need(
+        s.notebook.elders.some((e) => e.id === elderId) &&
+          !s.members.some((x) => x.elderId === elderId),
+        '长辈资料已绑定或不存在',
+      );
+      m.elderId = elderId;
+    } else {
+      m.elderId = uid();
+      s.notebook.elders.push({
+        id: m.elderId,
+        name,
+        relation: '家庭长辈',
+        note: '',
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
+  s.members.push(m);
+  return m;
+}
+function phone(v) {
+  const p = text(v || '', 20, '联系电话', true);
+  need(!p || /^\+?[0-9 -]{5,20}$/.test(p), '联系电话格式不正确');
+  return p;
+}
+function recipients(s, actor, elderId, sos) {
+  return s.members
+    .filter(
+      (m) =>
+        m.id !== actor.id &&
+        (sos
+          ? m.role === 'guardian'
+          : !elderId ||
+            (m.role === 'elder' && m.elderId === elderId) ||
+            (m.role === 'guardian' && m.following.includes(elderId))),
+    )
+    .map((m) => ({ memberId: m.id, status: 'pending', confirmedAt: null, seenAt: null }));
+}
+
+function createFamilyService(store, config, io = {}) {
+  function log(operation, requestId, stage, code) {
+    // Never include payloads, identities, telephone numbers or SDK error text.
+    try {
+      if (io.log)
+        io.log({
+          operation: /^[a-z.]{1,40}$/i.test(operation || '') ? operation : 'unknown',
+          requestId: /^[a-zA-Z0-9_-]{16,100}$/.test(requestId || '') ? requestId : 'invalid',
+          stage,
+          code,
+        });
+    } catch (e) {}
+  }
+  async function cleanup(openid) {
+    const state = await store.read(),
+      member = isMember(state, openid);
+    if (!member) return;
+    const candidates = state.media.filter(
+      (f) =>
+        f.deleted &&
+        !f.attached &&
+        (f.ownerId === member.id ||
+          (openid === config.owner && !state.members.some((m) => m.id === f.ownerId))),
+    );
+    for (const candidate of candidates) {
+      const claimed = await store.transaction(async (tx) => {
+        const current = await tx.read(),
+          m = isMember(current, openid);
+        if (!m) return null;
+        const file = current.media.find((f) => f.id === candidate.id);
+        if (
+          !file ||
+          !file.deleted ||
+          file.attached ||
+          current.messages.some((msg) => msg.mediaId === file.id)
+        )
+          return null;
+        if (
+          file.ownerId !== m.id &&
+          !(openid === config.owner && !current.members.some((n) => n.id === file.ownerId))
+        )
+          return null;
+        file.deleting = true;
+        await tx.write(current);
+        return file.fileId;
+      });
+      if (!claimed) continue;
+      await io.delete(claimed);
+      await store.transaction(async (tx) => {
+        const current = await tx.read();
+        current.media = current.media.filter(
+          (f) => !(f.id === candidate.id && f.deleted && !f.attached),
+        );
+        await tx.write(current);
+      });
+    }
+  }
+  async function mutate(openid, event, fn) {
+    need(/^[a-zA-Z0-9_-]{16,100}$/.test(event.requestId || ''), '操作编号无效，请重试');
+    const fingerprint = hash(JSON.stringify([event.operation, event.payload || {}]));
+    return store.transaction(async (tx) => {
+      const s = (await tx.read()) || blank();
+      need(s.schema === 4, '家庭数据版本不匹配');
+      const before = bytes(s);
+      const member = isMember(s, openid);
+      if (!member && !['family.create', 'family.join'].includes(event.operation))
+        throw new UserError('家庭身份已失效，请重新加入', 'MEMBERSHIP_REQUIRED');
+      const old = s.receipts.find((r) => r.id === event.requestId && r.actor === hash(openid));
+      if (old) {
+        need(old.fingerprint === fingerprint, '操作编号冲突，请重新操作');
+        return old.result;
+      }
+      const result = await fn(s, isMember(s, openid));
+      s.revision++;
+      s.receipts.push({ id: event.requestId, actor: hash(openid), fingerprint, result });
+      s.receipts = s.receipts.slice(-120);
+      enforceCapacity(s, before, event.operation);
+      await tx.write(s);
+      return result;
+    });
+  }
+  async function notify(sourceId) {
+    const state = await store.read();
+    const source = [...state.alerts, ...state.messages].find((x) => x.id === sourceId);
+    if (!source) return;
+    await Promise.all(
+      source.receivers
+        .filter((r) => r.status === 'pending')
+        .map(async (r) => {
+          const target = await store.transaction(async (tx) => {
+            const s = await tx.read(),
+              item = [...s.alerts, ...s.messages].find((x) => x.id === sourceId),
+              recipient = item && item.receivers.find((x) => x.memberId === r.memberId);
+            if (!recipient || recipient.status !== 'pending') return null;
+            const target = s.members.find((x) => x.id === r.memberId);
+            recipient.status = !target
+              ? 'removed'
+              : config.templateId && config.templateFields
+                ? 'sending'
+                : 'unconfigured';
+            recipient.at = new Date().toISOString();
+            await tx.write(s);
+            return target;
+          });
+          if (!target || !config.templateId || !config.templateFields) return;
+          let status = 'unknown';
+          try {
+            await io.notify(target.openid, {
+              title: source.kind === 'sos' ? '家人发来求助' : '家人有重要留言',
+              sender: source.senderName,
+              time: source.createdAt,
+              id: source.id,
+              kind: source.kind,
+            });
+            status = 'submitted';
+          } catch (e) {
+            status =
+              Number(e.errCode) === 43101
+                ? 'notSubscribed'
+                : e.code === 'TIMEOUT'
+                  ? 'unknown'
+                  : 'failed';
+            log('notification.send', sourceId, 'notify', status.toUpperCase());
+          }
+          await store.transaction(async (tx) => {
+            const s = await tx.read(),
+              item = [...s.alerts, ...s.messages].find((x) => x.id === sourceId),
+              recipient = item && item.receivers.find((x) => x.memberId === r.memberId);
+            if (recipient) {
+              recipient.status = status;
+              recipient.at = new Date().toISOString();
+              await tx.write(s);
+            }
+          });
+        }),
+    );
+  }
+  return async (context, event) => {
+    try {
+      need(config.appid, '尚未配置小程序 AppID，请由开发者配置环境变量 APPID');
+      need(context.OPENID && context.APPID === config.appid, '请从暖心护微信小程序登录');
+      const openid = context.OPENID,
+        p = event.payload || {},
+        op = event.operation;
+      if (op === 'identity')
+        return {
+          ok: true,
+          data: {
+            openid,
+            isOwner: !!config.owner && openid === config.owner,
+            configured: !!config.owner,
+          },
+        };
+      need(config.owner, '尚未配置家庭创建人，请由开发者配置 OWNER_OPENID');
+      if (op === 'session') {
+        const s = await store.read(),
+          m = isMember(s, openid);
+        return {
+          ok: true,
+          data: m
+            ? view(s, m, config)
+            : { me: null, isOwner: openid === config.owner, exists: !!s && s.members.length > 0 },
+        };
+      }
+      if (op === 'media.get') {
+        const s = await store.read(),
+          m = isMember(s, openid);
+        need(m, '请先加入家庭');
+        const file = s.media.find((x) => x.id === p.id);
+        need(file && !file.deleted && !file.deleting, '语音不存在或正在删除');
+        const msg = s.messages.find((x) => x.mediaId === p.id);
+        need(file.ownerId === m.id || (msg && canReadMessage(msg, m)), '无权收听这条语音');
+        const data = await io.download(file.fileId);
+        return { ok: true, data: { base64: data.toString('base64') } };
+      }
+      let uploaded = null;
+      if (op === 'media.upload') {
+        const s = await store.read(),
+          m = isMember(s, openid);
+        need(m, '请先加入家庭');
+        need(
+          typeof p.base64 === 'string' &&
+            p.base64.length < 540000 &&
+            /^[A-Za-z0-9+/=]+$/.test(p.base64),
+          '语音文件无效或超过400KB',
+        );
+        need(
+          Number.isFinite(p.duration) && p.duration >= 1 && p.duration <= 60,
+          '语音时长须为1—60秒',
+        );
+        const body = Buffer.from(p.base64, 'base64');
+        need(
+          body.length > 16 &&
+            (body.toString('ascii', 0, 3) === 'ID3' || (body[0] === 255 && body[1] >= 224)),
+          '仅支持MP3语音',
+        );
+        const old = s.receipts.find((r) => r.id === event.requestId && r.actor === hash(openid));
+        if (!old) uploaded = await io.upload(body);
+      }
+      let result;
+      try {
+        result = await mutate(openid, event, async (s, m) => {
+          const now = new Date().toISOString();
+          if (op === 'family.create') {
+            need(openid === config.owner, '仅家庭创建人可创建家庭');
+            need(!s.members.length, '家庭已创建，请重新登录');
+            need(['elder', 'guardian'].includes(p.role), '请选择本人身份');
+            s.name = text(p.familyName || '我的家', 30, '家庭名称');
+            return {
+              memberId: addMember(s, openid, p.role, text(p.name, 20, '称呼'), phone(p.phone)).id,
+            };
+          }
+          if (op === 'family.join') {
+            need(!m, '你已加入家庭');
+            need(typeof p.token === 'string' && /^[a-f0-9]{48}$/.test(p.token), '邀请码格式不正确');
+            const inv = s.invites.find((i) => i.hash === hash(p.token));
+            need(inv && !inv.used && inv.expiresAt > Date.now(), '邀请码无效、已使用或已过期');
+            const joined = addMember(
+              s,
+              openid,
+              inv.role,
+              text(p.name, 20, '称呼'),
+              phone(p.phone),
+              inv.elderId,
+            );
+            inv.used = true;
+            return { memberId: joined.id };
+          }
+          need(m, '请先通过家庭邀请登录');
+          if (op === 'family.invite') {
+            need(['elder', 'guardian'].includes(p.role), '邀请身份不正确');
+            need(
+              p.role === 'guardian' || openid === config.owner,
+              '邀请另一位长辈须由家庭创建人操作',
+            );
+            s.invites = s.invites.filter((i) => !i.used && i.expiresAt > Date.now());
+            need(s.invites.length < 10, '待使用邀请已达10个，请先撤销或等待过期');
+            if (p.elderId)
+              need(
+                p.role === 'elder' &&
+                  s.notebook.elders.some((e) => e.id === p.elderId) &&
+                  !s.members.some((x) => x.elderId === p.elderId),
+                '请重新选择尚未绑定微信的长辈',
+              );
+            const token = crypto.randomBytes(24).toString('hex');
+            s.invites.push({
+              id: uid(),
+              hash: hash(token),
+              role: p.role,
+              elderId: p.elderId || '',
+              expiresAt: Date.now() + 86400000,
+              by: m.id,
+            });
+            return { token, role: p.role };
+          }
+          if (op === 'family.revokeInvites') {
+            need(openid === config.owner, '仅创建人可撤销家庭邀请');
+            s.invites = [];
+            return {};
+          }
+          if (op === 'family.revokeInvite') {
+            const inv = s.invites.find((i) => i.id === p.id);
+            need(inv && (openid === config.owner || inv.by === m.id), '无权撤销此邀请');
+            s.invites = s.invites.filter((i) => i.id !== p.id);
+            return {};
+          }
+          if (op === 'profile.update') {
+            m.name = text(p.name, 20, '称呼');
+            m.phone = phone(p.phone);
+            if (m.elderId) {
+              const e = s.notebook.elders.find((x) => x.id === m.elderId);
+              if (e) e.name = m.name;
+            }
+            return {};
+          }
+          if (op === 'family.follow') {
+            need(m.role === 'guardian', '仅家人端可设置关注');
+            need(
+              Array.isArray(p.elderIds) &&
+                p.elderIds.every((id) => s.notebook.elders.some((e) => e.id === id)),
+              '关注的长辈不存在',
+            );
+            m.following = [...new Set(p.elderIds)];
+            return {};
+          }
+          if (op === 'family.remove') {
+            const target = s.members.find((x) => x.id === p.id);
+            need(target && target.openid !== config.owner, '家庭创建人不能被移除');
+            need(openid === config.owner || target.id === m.id, '无权移除该成员');
+            s.members = s.members.filter((x) => x.id !== target.id);
+            s.invites = s.invites.filter((x) => x.by !== target.id);
+            for (const a of s.alerts) {
+              a.retiredConfirmedCount =
+                (a.retiredConfirmedCount || 0) +
+                a.receivers.filter((r) => r.memberId === target.id && r.confirmedAt).length;
+              a.receivers = a.receivers.filter((r) => r.memberId !== target.id);
+            }
+            return {};
+          }
+          if (op === 'family.cleanupDeparted') {
+            need(openid === config.owner, '仅家庭创建人可整理离开成员的内容');
+            need(p.confirm === 'DELETE_DEPARTED_CONTENT', '请确认删除离开成员的内容');
+            const alive = new Set(s.members.map((m) => m.id));
+            const messages = s.messages.filter((x) => !alive.has(x.senderId));
+            const mediaIds = new Set(messages.map((x) => x.mediaId).filter(Boolean));
+            s.messages = s.messages.filter((x) => alive.has(x.senderId));
+            const records = (s.familyRecords || []).filter((x) => !alive.has(x.authorId));
+            s.familyRecords = (s.familyRecords || []).filter((x) => alive.has(x.authorId));
+            for (const f of s.media)
+              if (mediaIds.has(f.id) || (!alive.has(f.ownerId) && !f.attached)) {
+                f.attached = false;
+                f.deleted = true;
+              }
+            return { removedMessages: messages.length, removedRecords: records.length };
+          }
+          if (op === 'record.save') {
+            const rows = s.familyRecords || [],
+              old = p.id && rows.find((r) => r.id === p.id);
+            need(!p.id || old, '记录已不存在，请刷新');
+            need(!old || old.authorId === m.id, '只能修改本人创建的记录');
+            const subject = p.subjectMemberId || '';
+            need(
+              !subject ||
+                s.members.some((x) => x.id === subject) ||
+                (old && old.subjectMemberId === subject),
+              '关联成员已离开，请重新选择',
+            );
+            need(['饮食起居', '生活备忘', '陪伴记录'].includes(p.category), '记录分类无效');
+            let date;
+            try {
+              date = personal.date(p.date);
+            } catch (e) {
+              throw new UserError(e.message);
+            }
+            const row = {
+              id: old ? old.id : uid(),
+              authorId: m.id,
+              authorName: m.name,
+              subjectMemberId: subject,
+              subjectName: subject
+                ? (s.members.find((x) => x.id === subject) || {}).name || old.subjectName
+                : '全家',
+              scope: 'family',
+              date,
+              category: p.category,
+              content: text(p.content, 1000, '记录内容'),
+              createdAt: old ? old.createdAt : now,
+              updatedAt: now,
+            };
+            need(
+              old || rows.length + s.notebook.records.length < 1000,
+              '记录已达1000条，请整理后重试',
+            );
+            s.familyRecords = old ? rows.map((r) => (r.id === old.id ? row : r)) : [row, ...rows];
+            return { id: row.id };
+          }
+          if (op === 'record.delete') {
+            const rows = s.familyRecords || [],
+              row = rows.find((r) => r.id === p.id);
+            need(row && row.authorId === m.id, '只能删除本人创建的记录');
+            s.familyRecords = rows.filter((r) => r.id !== p.id);
+            return {};
+          }
+          if (op === 'notebook.apply') {
+            const a = p.action;
+            need(a && typeof a.type === 'string', '缺少记录操作');
+            const data = a.payload || {};
+            if (p.expectedRevision !== undefined && p.expectedRevision !== s.notebook.revision)
+              throw new UserError('资料已被家人更新，请先重新加载后再修改', 'REVISION_CONFLICT');
+            need(a.type !== 'clear', '家庭共享记录请逐项整理，不支持一键清空家人的内容');
+            if (m.role === 'elder') {
+              need(!a.type.startsWith('elder.'), '长辈资料请在本人设置中修改');
+              const rows = a.type.startsWith('record.') ? s.notebook.records : s.notebook.todos;
+              const existing = data.id && rows.find((x) => x.id === data.id);
+              need(
+                (existing ? existing.elderId : data.elderId) === m.elderId,
+                '只能操作本人相关的记录',
+              );
+              if (data.elderId) need(data.elderId === m.elderId, '不能转移到其他长辈');
+            }
+            if (a.type === 'elder.delete')
+              need(
+                !s.members.some((x) => x.elderId === data.id),
+                '这位长辈已绑定微信账号，不能删除绑定资料',
+              );
+            try {
+              s.notebook = personal.apply(s.notebook, {
+                id: event.requestId,
+                type: a.type,
+                payload: data,
+              });
+            } catch (e) {
+              throw new UserError(e.message);
+            }
+            return {};
+          }
+          if (op === 'media.upload') {
+            need(
+              s.media.filter((x) => x.ownerId === m.id && !x.attached).length < 5,
+              '未发送语音已达5条，请在消息页清理草稿',
+            );
+            const id = uid();
+            need(uploaded, '请重新上传语音');
+            s.media.push({
+              id,
+              fileId: uploaded,
+              ownerId: m.id,
+              duration: p.duration,
+              createdAt: now,
+              attached: false,
+            });
+            return { id, duration: p.duration };
+          }
+          if (op === 'message.send') {
+            need(s.messages.length < 200, '家庭留言已达200条，请先删除本人不再需要的旧留言');
+            const body = text(p.text || '', 1000, '留言内容', true),
+              media = p.mediaId && s.media.find((x) => x.id === p.mediaId);
+            need(!p.mediaId || media, '录音已不存在，请重新录制');
+            need(body || media, '请填写文字或录制语音');
+            if (media)
+              need(
+                media.ownerId === m.id && !media.attached && !media.deleted && !media.deleting,
+                '录音已使用或正在清理，请重新录制',
+              );
+            const audience = p.audience;
+            need(
+              audience === undefined || ['family', 'members'].includes(audience),
+              '请选择留言接收范围',
+            );
+            let recipientIds;
+            if (audience === 'members') {
+              need(
+                Array.isArray(p.recipientIds) &&
+                  p.recipientIds.length > 0 &&
+                  p.recipientIds.length < 20,
+                '请至少选择一位家人',
+              );
+              recipientIds = [...new Set(p.recipientIds)];
+              need(
+                recipientIds.every((id) => id !== m.id && s.members.some((x) => x.id === id)),
+                '所选家人已离开或无效，请重新选择',
+              );
+            } else if (audience === 'family')
+              recipientIds = s.members.filter((x) => x.id !== m.id).map((x) => x.id);
+            const elderId = audience ? '' : m.role === 'elder' ? m.elderId : p.elderId || '';
+            need(!elderId || s.notebook.elders.some((x) => x.id === elderId), '关联长辈不存在');
+            const receivers = audience
+              ? recipientIds.map((memberId) => ({
+                  memberId,
+                  status: 'pending',
+                  confirmedAt: null,
+                  seenAt: null,
+                }))
+              : recipients(s, m, elderId, false);
+            if (audience) need(receivers.length > 0, '请先邀请一位家人加入后再发送留言');
+            const id = uid();
+            if (media) media.attached = id;
+            s.messages.unshift({
+              id,
+              kind: 'message',
+              text: body,
+              mediaId: media ? media.id : '',
+              duration: media ? media.duration : 0,
+              elderId,
+              ...(audience ? { audience, recipientIds } : {}),
+              senderId: m.id,
+              senderName: m.name,
+              createdAt: now,
+              important: !!p.important,
+              receivers: receivers.map((r) => ({ ...r, status: p.important ? r.status : 'inApp' })),
+            });
+            return { id };
+          }
+          if (op === 'message.read' || op === 'message.ack') {
+            const msg = s.messages.find((x) => x.id === p.id);
+            need(msg, '留言已不存在');
+            need(canReadMessage(msg, m), '无权查看该留言');
+            let r = msg.receivers.find((x) => x.memberId === m.id);
+            if (!r && m.id !== msg.senderId) {
+              r = { memberId: m.id, status: 'inApp' };
+              msg.receivers.push(r);
+            }
+            if (r) {
+              r.seenAt = now;
+              if (op === 'message.ack') r.confirmedAt = now;
+            }
+            return {};
+          }
+          if (op === 'message.remove') {
+            const msg = s.messages.find((x) => x.id === p.id);
+            need(msg && msg.senderId === m.id, '只能删除本人发送的留言');
+            s.messages = s.messages.filter((x) => x.id !== p.id);
+            const file = s.media.find((x) => x.id === msg.mediaId);
+            if (file) {
+              file.attached = false;
+              file.deleted = true;
+            }
+            return {};
+          }
+          if (op === 'media.clean') {
+            const ids = s.media
+              .filter((x) => x.ownerId === m.id && (!x.attached || x.deleted))
+              .map((x) => x.id);
+            for (const id of ids) {
+              const f = s.media.find((x) => x.id === id);
+              f.deleted = true;
+            }
+            return { ids };
+          }
+          if (op === 'sos.raise') {
+            const elderId = m.role === 'elder' ? m.elderId : p.elderId;
+            need(
+              s.notebook.elders.some((e) => e.id === elderId),
+              '请先选择求助的长辈',
+            );
+            const existing = s.alerts.find((x) => x.elderId === elderId && x.status === 'active');
+            if (existing) return { id: existing.id };
+            need(
+              s.alerts.filter((x) => x.status === 'active').length < 20,
+              '当前待确认求助过多，请先查看已有求助',
+            );
+            pruneHistory(s);
+            const id = uid();
+            s.alerts.unshift({
+              id,
+              kind: 'sos',
+              elderId,
+              senderId: m.id,
+              senderName: m.name,
+              note: text(p.note || '', 200, '求助备注', true),
+              createdAt: now,
+              status: 'active',
+              receivers: recipients(s, m, elderId, true),
+            });
+            return { id };
+          }
+          if (op === 'sos.ack') {
+            need(m.role === 'guardian', '请由家人确认收到求助');
+            const a = s.alerts.find((x) => x.id === p.id);
+            need(a && a.status === 'active', '求助已结束或不存在');
+            let r = a.receivers.find((x) => x.memberId === m.id);
+            if (!r) {
+              r = { memberId: m.id, status: 'inApp' };
+              a.receivers.push(r);
+            }
+            r.confirmedAt = r.confirmedAt || now;
+            r.seenAt = now;
+            return {};
+          }
+          if (op === 'sos.close') {
+            const a = s.alerts.find((x) => x.id === p.id);
+            need(a, '求助不存在');
+            need(a.senderId === m.id || m.role === 'guardian', '无权结束该求助');
+            a.status = p.cancel && a.senderId === m.id ? 'cancelled' : 'closed';
+            a.closedAt = now;
+            a.closedBy = m.name;
+            return {};
+          }
+          throw new UserError('不支持的家庭操作');
+        });
+      } catch (e) {
+        if (uploaded) await io.delete(uploaded).catch(() => {});
+        throw e;
+      }
+      // Concurrent retries may each upload before one transaction wins. Remove the losing file.
+      if (op === 'media.upload' && uploaded) {
+        const s = await store.read();
+        const kept = s.media.find((x) => x.id === result.id);
+        if (!kept || kept.fileId !== uploaded) await io.delete(uploaded);
+      }
+      if (['media.clean', 'message.remove', 'family.cleanupDeparted'].includes(op))
+        await cleanup(openid);
+      if (op === 'sos.raise' || (op === 'message.send' && p.important)) {
+        try {
+          await notify(result.id);
+        } catch (e) {
+          log(op, event.requestId, 'notify', 'NOTIFICATION_FAILED');
+        }
+      }
+      return { ok: true, data: result };
+    } catch (e) {
+      const code = e instanceof UserError ? e.code : 'INTERNAL_ERROR';
+      log(event && event.operation, event && event.requestId, 'operation', code);
+      return {
+        ok: false,
+        error: {
+          code,
+          message:
+            e instanceof UserError ? e.message : '云端操作未完成，请检查网络或家庭云环境配置后重试',
+        },
+      };
+    }
+  };
+}
+module.exports = { createFamilyService, blank };

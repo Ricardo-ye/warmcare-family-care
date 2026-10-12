@@ -1,0 +1,5 @@
+<template name="status">
+  <view wx:if="{{reminderError}}" class="error" role="alert">{{reminderError}}</view>
+  <view wx:if="{{error}}" class="error" role="alert">{{error}}<button class="outline full section" bindtap="refresh" disabled="{{busy}}">重新加载</button></view>
+  <view wx:if="{{loading}}" class="notice">正在加载，请稍候…</view>
+</template>

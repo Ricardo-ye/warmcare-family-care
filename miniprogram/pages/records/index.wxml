@@ -1,0 +1,28 @@
+<import src="../../templates.wxml"/>
+<view class="screen {{large?'large':''}}">
+ <view class="eyebrow">把日子慢慢记下来</view><view class="title spaced">{{composing?(id?'编辑生活记录':'一句话，记下今天'):'生活记录'}}</view><template is="status" data="{{error,loading,busy,reminderError}}"/>
+ <view wx:if="{{session}}">
+  <view wx:if="{{!composing}}">
+   <view class="muted spaced">说说今天的小事，整理后全家一起看。</view><button hover-class="press-feedback" class="primary full section" bindtap="create">{{content || id?'继续未保存的记录':'＋ 一句话记事'}}</button>
+   <input class="input section" value="{{query}}" bindinput="search" placeholder="搜索成员、内容、分类或日期" maxlength="100" aria-label="搜索生活记录"/>
+   <view class="filters"><button hover-class="press-feedback" class="{{filter==='all'?'selected':'soft'}}" data-filter="all" bindtap="filter">全部记录</button><button hover-class="press-feedback" class="{{filter==='mine'?'selected':'soft'}}" data-filter="mine" bindtap="filter">我创建的</button></view>
+   <view wx:if="{{!itemCount}}" class="empty"><view class="heading">{{query?'没有找到匹配记录':'这里还没有记录'}}</view><view class="muted spaced">例如：今天陪奶奶散步了半小时。</view></view>
+   <view wx:for="{{items}}" wx:key="id" class="card"><view class="row between wrap"><view class="heading">{{item.subjectName}}</view><view class="pill">{{item.category}}</view></view><view class="small muted spaced">{{item.date}} · {{item.legacy?'原有可见范围':item.authorName+'记录 · 全家可见'}}</view><view class="preserve section">{{item.content}}</view><view wx:if="{{item.canEdit}}" class="row wrap section"><button hover-class="press-feedback" class="outline grow" data-id="{{item.id}}" bindtap="edit" disabled="{{busy}}">编辑</button><button hover-class="press-feedback" class="text-button" data-id="{{item.id}}" bindtap="remove" disabled="{{busy}}">删除</button></view></view>
+   <button hover-class="press-feedback" wx:if="{{hasMore}}" class="outline full section" bindtap="more">继续查看 · 共 {{total}} 条</button>
+  </view>
+  <view wx:else>
+   <button hover-class="press-feedback" class="outline full section" bindtap="back" disabled="{{busy}}">返回列表（保留本页草稿）</button><view class="card">
+    <label class="label" for="content">今天发生了什么</label><textarea id="content" class="input textarea" value="{{content}}" data-field="content" bindinput="input" maxlength="1000" placeholder="例如：今天陪奶奶散步了半小时"/><view class="small muted spaced">也可用手机输入法语音转文字。整理会保留原文。</view>
+    <button hover-class="press-feedback" wx:if="{{!legacy}}" class="{{draftReady?'outline':'primary'}} full section" bindtap="organize" disabled="{{busy}}">{{draftReady?'按当前文字重新整理':'帮我整理成记录'}}</button>
+    <view wx:if="{{draftReady}}">
+     <view class="heading section">确认一下整理结果</view><view wx:for="{{draftNotes}}" wx:key="*this" class="small muted spaced">{{item}}</view>
+     <label class="label">关联{{legacy?'长辈':'成员'}}</label><picker range="{{subjectOptions}}" range-key="name" value="{{subjectIndex}}" bindchange="chooseSubject"><view class="input">{{subjectOptions[subjectIndex].name}} ↓</view></picker>
+     <label class="label">日期</label><picker mode="date" value="{{date}}" bindchange="chooseDate"><view class="input">{{date}} ↓</view></picker>
+     <label class="label">分类</label><picker range="{{categories}}" value="{{categoryIndex}}" bindchange="chooseCategory"><view class="input">{{categories[categoryIndex]}} ↓</view></picker>
+     <view class="notice small">{{legacy?'这是一条旧记录，编辑后保持原来的可见范围。':'保存后全家可查看，只有创建者可以编辑和删除。'}}</view>
+     <button hover-class="press-feedback" class="primary full section" bindtap="save" disabled="{{busy}}" loading="{{busy}}">确认并保存记录</button>
+    </view>
+   </view><button hover-class="press-feedback" class="text-button full section" bindtap="discard" disabled="{{busy}}">放弃本页修改</button><view class="small muted section">根据文字中的称呼、日期和活动关键词整理，请确认后再保存。</view>
+  </view>
+ </view>
+</view>

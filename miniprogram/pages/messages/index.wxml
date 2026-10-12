@@ -1,0 +1,42 @@
+<import src="../../templates.wxml"/>
+<view class="screen {{large?'large':''}}">
+ <view class="eyebrow">一家人的留言</view><view class="title spaced">{{composing?'给家人留句话':'家人消息'}}</view>
+ <template is="status" data="{{error,loading,busy,reminderError}}"/>
+ <view wx:if="{{session}}">
+  <view wx:if="{{!composing}}">
+   <view class="muted spaced">{{session.unread?'还有 '+session.unread+' 条留言等你查看':'看看家人的近况，也说说你的今天。'}}</view>
+   <button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="primary full section" bindtap="compose">{{text || draftPath?'继续写未发送的留言':'＋ 写留言 / 发语音'}}</button>
+   <input class="input section" value="{{query}}" bindinput="search" placeholder="搜索称呼或留言内容" maxlength="100" aria-label="搜索留言"/><view class="filters message-filters"><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="{{filter==='all'?'selected':'soft'}}" bindtap="filter" data-filter="all">全部</button><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="{{filter==='unread'?'selected':'soft'}}" bindtap="filter" data-filter="unread">未读 {{session.unread}}</button><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="{{filter==='mine'?'selected':'soft'}}" bindtap="filter" data-filter="mine">我发的</button><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="{{filter==='important'?'selected':'soft'}}" bindtap="filter" data-filter="important">重要</button></view>
+   <view wx:if="{{!itemCount}}" class="empty"><view class="heading">{{filter==='unread'?'未读留言都看过了':'这里还没有留言'}}</view><view class="muted">{{filter==='unread'?'点击“全部”可以回看家人的消息。':'给家人发一段语音，报个平安吧。'}}</view></view>
+   <view wx:for="{{items}}" wx:key="id" class="card message-card {{item.mine?'message-mine':''}} {{item.unread?'message-unread':''}}">
+    <view class="row between wrap"><view class="heading">{{item.senderName}}<text wx:if="{{item.mine}}" class="small muted"> · 我</text></view><view class="pill {{item.unread?'unread-pill':''}}">{{item.important?'需确认':item.unread?'未读':'日常留言'}}</view></view>
+    <view class="small muted spaced">{{item.time}} · {{item.audienceLabel}}</view>
+    <view wx:if="{{item.text}}" class="message-text spaced">{{item.text}}</view>
+    <button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" wx:if="{{item.mediaId}}" class="voice-button full section" bindtap="play" data-id="{{item.mediaId}}" disabled="{{busy}}">{{playingId===item.mediaId?'■ 停止播放':'▶ 听语音'}} · {{item.duration}} 秒</button>
+    <button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" wx:if="{{!item.mine && item.important}}" class="primary full section" bindtap="ack" data-id="{{item.id}}" disabled="{{busy || item.myReceipt.confirmedAt}}">{{item.myReceipt.confirmedAt?'✓ 我已确认收到':'我已收到这条留言'}}</button>
+    <button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" wx:elif="{{!item.mine && item.unread}}" class="outline full section" bindtap="read" data-id="{{item.id}}" disabled="{{busy}}">我看过了</button>
+    <view wx:if="{{item.mine && item.receiverCount}}" class="receipt-list"><view wx:for="{{item.receivers}}" wx:for-item="person" wx:key="memberId" class="small muted">{{person.name}} · {{person.label}}</view></view>
+    <view wx:if="{{item.mine && !item.receiverCount}}" class="small muted spaced">暂无接收成员，可先在“我的家人”确认邀请与绑定。</view>
+    <button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" wx:if="{{item.mine}}" class="text-button section" bindtap="remove" data-id="{{item.id}}" disabled="{{busy}}">删除这条留言</button>
+   </view>
+   <button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" wx:if="{{hasMore}}" class="outline full section" bindtap="more">继续查看（共 {{itemCount}} 条）</button>
+   <button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" wx:if="{{session.notificationConfigured}}" class="outline full section" bindtap="subscribe">允许下一条重要提醒</button>
+   <view class="small muted section">新消息自动更新并尝试振动。提示不代表已读，请主动点“我看过了”或确认收到。</view>
+  </view>
+  <view wx:else>
+   <button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="outline full section" bindtap="backToMessages" disabled="{{recording || busy}}">返回消息列表（保留本页草稿）</button>
+   <view class="card">
+    <view class="heading">发给谁</view><view class="filters"><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="{{audience==='family'?'selected':'soft'}}" bindtap="selectAudience" data-audience="family">全家</button><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="{{audience==='members'?'selected':'soft'}}" bindtap="selectAudience" data-audience="members">指定成员</button></view><checkbox-group wx:if="{{audience==='members'}}" bindchange="selectRecipients"><label wx:for="{{recipientOptions}}" wx:key="id" class="checkrow person-line"><checkbox value="{{item.id}}" checked="{{item.selected}}" color="#a44424"/><text>{{item.name}} · {{item.role==='elder'?'长辈':'家人'}}</text></label></checkbox-group><view class="small muted">{{audience==='family'?'家庭内所有成员可查看。':'只有你和勾选的成员能查看这条留言和语音。'}}</view>
+    <label class="label" for="text">想对家人说什么</label><textarea id="text" class="input textarea" value="{{text}}" data-field="text" bindinput="input" maxlength="1000" placeholder="例如：今天精神很好，下午想一起散步"/>
+    <view class="small muted spaced">可以打字，也可以录一段语音。</view>
+    <view wx:if="{{recording}}" class="recording section"><view class="heading">正在录音 · {{seconds}} 秒</view><view class="small muted">最长 60 秒</view><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="danger full section" bindtap="stop">结束录音</button></view>
+    <button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" wx:elif="{{!draftPath}}" class="voice-button full section" bindtap="record" disabled="{{busy}}">录一段语音给家人</button>
+    <view wx:if="{{draftPath}}" class="notice"><view>待发送语音 · {{duration}} 秒</view><view class="row wrap section"><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="outline grow" bindtap="preview">试听</button><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="soft grow" bindtap="discard" disabled="{{busy}}">取消语音</button></view></view>
+    <view class="divider"/><view class="row between"><view class="grow"><view>需要家人确认</view><view class="small muted">重要的事情，请对方点确认</view></view><switch checked="{{important}}" bindchange="important" color="#a44424" aria-label="这条留言需要家人确认"/></view>
+    <view wx:if="{{important && !session.notificationConfigured}}" class="small muted spaced">当前只在小程序内提示，紧急事情请电话联系。</view>
+    <button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="primary full section" bindtap="send" disabled="{{busy || recording}}" loading="{{busy}}">发送留言</button>
+   </view>
+   <view class="row wrap section"><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="text-button grow" bindtap="settings">麦克风设置</button><button hover-class="press-feedback" hover-start-time="20" hover-stay-time="80" class="text-button grow" bindtap="clean" disabled="{{busy}}">清理未发送的录音</button></view>
+  </view>
+ </view>
+</view>

@@ -1,0 +1,23 @@
+{
+  "name": "nuanxinhu",
+  "version": "4.2.1",
+  "private": true,
+  "description": "暖心夕护小助手：受邀家庭的照护记录、留言与求助",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "node scripts/check.js",
+    "package": "python scripts/package.py",
+    "prepare:cloud": "node scripts/prepare-cloud.js",
+    "format": "prettier --write \"miniprogram/**/*.js\" \"cloudfunctions/warmcare/lib/*.js\" \"scripts/*.{js,cjs}\" \"tests/**/*.js\" \"*.json\"",
+    "format:check": "prettier --check \"miniprogram/**/*.js\" \"cloudfunctions/warmcare/lib/*.js\" \"scripts/*.{js,cjs}\" \"tests/**/*.js\" \"*.json\"",
+    "check:bundle": "node scripts/verify-bundle.js",
+    "verify": "npm run format:check && npm run check && npm run check:bundle && npm test",
+    "runtime:smoke": "node scripts/runtime-smoke.cjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "prettier": "3.6.2"
+  }
+}

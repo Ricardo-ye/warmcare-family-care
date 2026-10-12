@@ -1,0 +1,7 @@
+node_modules/
+artifacts/
+cloudfunctions/warmcare/node_modules/
+cloudfunctions/warmcare/index.js
+cloudfunctions/warmcare/lib/personal.js
+**/package-lock.json
+project.private.config.json

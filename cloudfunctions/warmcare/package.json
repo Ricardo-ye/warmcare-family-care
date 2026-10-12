@@ -1,0 +1,11 @@
+{
+  "name": "warmcare",
+  "version": "4.2.1",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "3.0.1"
+  },
+  "engines": {
+    "node": ">=16.13"
+  }
+}

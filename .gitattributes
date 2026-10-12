@@ -1,0 +1,17 @@
+# 默认按 LF 存储，检出时由各平台决定，避免 Windows 上产生整仓 CRLF 差异
+* text=auto eol=lf
+
+# 微信小程序源码保持 LF，避免与开发者工具产生无关 diff
+*.js text eol=lf
+*.json text eol=lf
+*.wxml text eol=lf
+*.wxss text eol=lf
+*.md text eol=lf
+
+# 二进制资源不参与换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.mp3 binary
+*.zip binary
