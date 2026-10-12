@@ -4,9 +4,15 @@
 
 ## 必需配置
 
+0. 两处占位符需先替换为本项目自己的值：根目录 `project.config.json` 的 `appid`（默认为 `touristappid`），以及 `miniprogram/config.js` 的 `cloudEnv`（默认为空字符串，留空时小程序不会连接云环境）。
 1. 在指定云环境新建集合 `family_private`。客户端权限设置为“仅管理端可读写”，或自定义 `{"read":false,"write":false}`。家庭数据由云函数经微信身份和成员绑定检查后返回，前端不能直接写数据库。
 2. 语音所在云存储必须禁止客户端公开读取或写入，规则见 `deployment/storage.rules.json`。本项目通过云函数上传与读取录音，不发放公开音频链接。若环境还存放其他项目文件，先隔离存储范围，不能直接覆盖其他项目正在使用的权限规则。
-3. 云函数 `warmcare` 设置环境变量 `OWNER_OPENID`，值必须是创建人的**当前小程序 OpenID**，不是腾讯云账号 ID、AppID 或开发者工具账号标识。未配置时拒绝建家庭和读取家庭记录。
+3. 云函数 `warmcare` 设置两个环境变量：
+
+| 变量 | 值 | 说明 |
+| --- | --- | --- |
+| `OWNER_OPENID` | 创建人的**当前小程序 OpenID** | 不是腾讯云账号 ID、AppID 或开发者工具账号标识。未配置时拒绝建家庭和读取家庭记录。 |
+| `APPID` | 与 `project.config.json` 相同的小程序 AppID | 用于校验调用来源。未配置时云函数拒绝所有请求（fail closed）。 |
 4. 先运行 `npm run prepare:cloud` 生成自包含 `index.js`，再部署当前 `cloudfunctions/warmcare` 全部文件并在云端安装依赖。不要直接修改生成的 `index.js`，后端入口源文件是 `lib/entry.js`。将函数超时配置为至少 30 秒；语音上传与通知可能超过默认 3 秒。
 5. 微信公众平台隐私保护指引按真实用途登记：用户填写的联系号码、家庭留言和录音等；录音仅在用户操作和授权后使用。
 
@@ -15,7 +21,7 @@
 ```js
 wx.cloud.callFunction({
   name: 'warmcare',
-  config: { env: 'cloud1-d1gue6aev16c5d2ce' },
+  config: { env: '你的云环境ID' },
   data: { operation: 'identity' }
 }).then(res => console.log(res.result.data.openid))
 ```
